@@ -55,6 +55,19 @@
     white-space:nowrap; max-width:calc(100vw - 32px); overflow:hidden; text-overflow:ellipsis; transition:opacity .4s; pointer-events:none; }
   #again { position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom)); z-index:6; font-size:15px; padding:10px 18px; display:none; }
   .hidden { opacity:0 !important; }
+  #shotWrap { position:fixed; top:calc(14px + env(safe-area-inset-top)); right:14px; z-index:7; display:none; flex-direction:column; align-items:flex-end; gap:10px; }
+  #shotWrap.on { display:flex; }
+  #shot { width:clamp(96px,20vw,170px); padding:6px 6px 4px; background:var(--paper); border:2px solid var(--ink); border-radius:4px;
+    box-shadow:5px 5px 0 var(--blue); transform:rotate(3deg); cursor:pointer; font-family:inherit; color:var(--ink);
+    animation:shotIn .8s cubic-bezier(.2,.9,.3,1.2) both; touch-action:manipulation; }
+  #shot img { display:block; width:100%; border:1px solid var(--ink); }
+  #shot span { display:block; font-size:10px; font-weight:700; letter-spacing:.08em; padding-top:4px; text-align:center; }
+  #shot:active { transform:rotate(3deg) translate(3px,3px); box-shadow:2px 2px 0 var(--blue); }
+  @keyframes shotIn { 0% { transform:translate(-38vw,38vh) scale(2.8) rotate(-10deg); opacity:0 } 25% { opacity:1 } 100% { transform:rotate(3deg) } }
+  #shareMenu { display:flex; flex-direction:column; gap:6px; background:var(--paper); border:2px solid var(--ink); border-radius:10px; padding:8px; box-shadow:4px 4px 0 var(--pink); }
+  #shareMenu[hidden] { display:none; }
+  #shareMenu button { font-family:inherit; font-size:12px; font-weight:700; color:var(--ink); background:var(--yellow); border:1.5px solid var(--ink); border-radius:999px; padding:7px 14px; cursor:pointer; text-align:left; }
+  #shareMenu small { font-size:10px; max-width:150px; }
 </style>
 </head>
 <body>
@@ -73,6 +86,15 @@
 </div>
 <div id="hint" class="hidden"></div>
 <button class="btn" id="again">↺ Pick again</button>
+<div id="shotWrap">
+  <button id="shot" aria-label="Share your photo"><img id="shotImg" alt="Your gift photo"><span id="shotLabel">SAVED · TAP TO SHARE</span></button>
+  <div id="shareMenu" hidden>
+    <button data-a="copy">Copy image</button>
+    <button data-a="save">Download again</button>
+    <button data-a="open">Open full size</button>
+    <small id="shareMsg"></small>
+  </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
 <script type="module">
@@ -596,6 +618,8 @@ const SFX = {
     for (const [f, d] of [[2637, 1], [3520, 1.1]]) { tone(f, t + .14, d, { type: 'sine', v: .12 }); tone(f * 2.76, t + .14, d * .5, { type: 'sine', v: .03 }); }
   },
   coin() { const t = SFX.now(); tone(1976, t, .08, { type: 'square', v: .04, lp: 5000 }); tone(2637, t + .07, .3, { type: 'square', v: .04, lp: 5000 }); },
+  beep(hi) { const t = SFX.now(); tone(hi ? 1320 : 880, t, .16, { type: 'triangle', v: .2 }); },
+  shutter() { const t = SFX.now(); noise(t, .04, { v: .5, bp: 3000, q: .6 }); tone(220, t, .05, { type: 'square', v: .12, lp: 1200 }); noise(t + .09, .07, { v: .4, bp: 2200, q: .6 }); },
   reelStop() { const t = SFX.now(); tone(160, t, .12, { type: 'triangle', v: .25 }); tone(1568, t + .02, .35, { type: 'sine', v: .09 }); },
   jackpot() {
     const t = SFX.now() + .05;
@@ -769,7 +793,7 @@ const hint = document.getElementById('hint'), againBtn = document.getElementById
 function setHint(t) { if (!t) { hint.classList.add('hidden'); return; } hint.textContent = t; hint.classList.remove('hidden'); }
 
 function startCards() {
-  phase = 'cards'; phaseT = 0; flip = null; effect = null;
+  phase = 'cards'; phaseT = 0; flip = null; effect = null; countdown = null; capturePending = false; shareMenu.hidden = true;
   for (const it of items) if (!it.removed) Composite.remove(world, it.b);
   items = []; attached = []; particles = [];
   engine.gravity.y = 1;
@@ -1098,8 +1122,8 @@ function drawSlot(s) {
 function cardLayout(dt) {
   const cw = CARD.w, ch = CARD.h, gap = cw * .14, total = 3 * cw + 2 * gap;
   let cx = W / 2, cy = H * .45;
-  if (BODY.vis) { cx = BODY.hc.x; cy = BODY.hc.y + BODY.ry * .15; }
-  cx = clamp(cx, total / 2 + 8, W - total / 2 - 8); cy = clamp(cy, ch / 2 + 20, H - ch / 2 - 80);
+  if (BODY.vis) { cx = BODY.hc.x; cy = BODY.hc.y + BODY.earD * .42 + ch / 2; }
+  cx = clamp(cx, total / 2 + 8, W - total / 2 - 8); cy = clamp(cy, ch / 2 + 20, H - ch / 2 - 64);
   const k = Math.min(1, dt * 3.5); anchor.x += (cx - anchor.x) * k; anchor.y += (cy - anchor.y) * k;
   return { cw, ch, gap };
 }
@@ -1129,11 +1153,18 @@ function update(dt) {
     }
   }
   if (phase === 'effect') updEffect(dt);
+  if (countdown) {
+    countdown.t += dt; const n = 3 - Math.floor(countdown.t);
+    if (n !== countdown.last && n >= 1) { countdown.last = n; SFX.beep(n === 1); }
+    if (countdown.t >= 3) { countdown = null; capturePending = true; }
+  }
+  if (flashT !== null) { flashT += dt; if (flashT > .6) flashT = null; }
   updParticles(dt);
 }
 let stepAcc = 0;
 function updEffect(dt) {
   const e = effect; e.t += dt;
+  if (!e.snapped && e.t > SNAP_AT[e.type]) { e.snapped = true; countdown = { t: 0, last: 0 }; }
   if (e.type === 'cake') {
     const rate = e.t < 4 ? 7 : 1.3; e.acc += dt * rate; while (e.acc > 1) { e.acc--; spawnCake(); } killOld('cake', 75);
     if (Math.random() < dt * 22) confetti(rand(0, W), -20, 1, Math.PI / 2, .3, 60);
@@ -1270,7 +1301,77 @@ function render() {
   drawCards();
   drawFingers();
   if (paperPat) { ctx.fillStyle = paperPat; ctx.fillRect(0, 0, W, H); }
+  if (countdown) drawCountdown();
+  if (flashT !== null) { ctx.save(); ctx.globalAlpha = 1 - flashT / .6; ctx.fillStyle = '#fffdf7'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
 }
+
+// ---------- photo booth ----------
+const SNAP_AT = { cake: 6, snack: 6, money: 5 };
+let countdown = null, capturePending = false, flashT = null, lastShot = null;
+const shotWrap = document.getElementById('shotWrap'), shotImg = document.getElementById('shotImg'), shotBtn = document.getElementById('shot');
+const shareMenu = document.getElementById('shareMenu'), shareMsg = document.getElementById('shareMsg'), shotLabel = document.getElementById('shotLabel');
+function drawCountdown() {
+  const n = 3 - Math.floor(countdown.t), f = countdown.t % 1, s = easeOutBack(clamp(f / .35, 0, 1)), fs = Math.min(W, H) * .32;
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.globalAlpha = 1 - clamp((f - .8) / .2, 0, 1); ctx.scale(s, s);
+  ctx.fillStyle = P.paper; ctx.globalAlpha *= .9; ctx.beginPath(); ctx.arc(0, 0, fs * .62, 0, 7); ctx.fill(); ctx.globalAlpha /= .9;
+  ctx.lineWidth = fs * .05; ctx.strokeStyle = P.yellow; ctx.beginPath(); ctx.arc(0, 0, fs * .62, -Math.PI / 2, -Math.PI / 2 + (1 - f) * 6.283); ctx.stroke();
+  ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.beginPath(); ctx.arc(2, 1.5, fs * .66, 0, 7); ctx.stroke();
+  ctx.font = `${fs * .82}px "Archivo Black"`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = P.blue; ctx.fillText(n, fs * .05, fs * .05); ctx.fillStyle = P.pink; ctx.fillText(n, 0, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.font = `700 ${fs * .075}px "Space Mono"`; ctx.fillStyle = INK; ctx.fillText(n === 1 ? 'SAY CHEESE!' : 'GET READY', 0, fs * .44);
+  ctx.restore();
+}
+const pad2 = n => String(n).padStart(2, '0');
+function stampPhoto(g, w, h, d) {
+  const txt = `${d.getFullYear()}.${pad2(d.getMonth() + 1)}.${pad2(d.getDate())}  ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const fs = clamp(Math.min(w, h) * .045, 15, 38), x = w - fs * .9, y = h - fs * .9;
+  g.save(); g.textBaseline = 'alphabetic';
+  g.font = `700 ${fs}px "Space Mono"`; g.textAlign = 'right';
+  g.fillStyle = P.paper; g.globalAlpha = .75; const tw = g.measureText(txt).width; rr(g, x - tw - fs * .4, y - fs * 1.05, tw + fs * .8, fs * 1.45, fs * .2); g.fill(); g.globalAlpha = 1;
+  g.globalCompositeOperation = 'multiply'; g.fillStyle = P.blue; g.fillText(txt, x + 2, y + 2); g.fillStyle = P.orange; g.fillText(txt, x, y);
+  g.globalCompositeOperation = 'source-over';
+  const lab = { cake: 'HAPPY BIRTHDAY', snack: "IT'S ALL YOURS", money: 'JACKPOT' }[effect ? effect.type : 'cake'];
+  g.font = `${fs * .5}px "Archivo Black"`; g.textAlign = 'right'; g.fillStyle = INK; g.fillText(`PICK A GIFT — ${lab}`, x, y - fs * 1.35);
+  g.restore();
+}
+function downloadBlob(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function takePhoto() {
+  SFX.shutter();
+  const d = new Date();
+  const ex = document.createElement('canvas'); ex.width = cvs.width; ex.height = cvs.height;
+  const g = ex.getContext('2d'); g.drawImage(cvs, 0, 0); g.scale(DPR, DPR); stampPhoto(g, W, H, d);
+  const name = `pick-a-gift-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}.png`;
+  ex.toBlob(blob => {
+    if (!blob) return;
+    if (lastShot) URL.revokeObjectURL(lastShot.url);
+    lastShot = { blob, name, url: URL.createObjectURL(blob) };
+    downloadBlob(blob, name);
+    shotImg.src = lastShot.url; shotLabel.textContent = 'SAVED · TAP TO SHARE'; shareMenu.hidden = true;
+    shotWrap.classList.remove('on'); void shotWrap.offsetWidth; shotWrap.classList.add('on');
+    shotBtn.style.animation = 'none'; void shotBtn.offsetWidth; shotBtn.style.animation = '';
+  }, 'image/png');
+}
+shotBtn.addEventListener('click', async () => {
+  if (!lastShot) return;
+  const file = new File([lastShot.blob], lastShot.name, { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Pick A Gift', text: 'I picked a gift!' }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  shareMsg.textContent = ''; shareMenu.hidden = !shareMenu.hidden;
+});
+shareMenu.addEventListener('click', async e => {
+  const a = e.target.closest('button')?.dataset.a; if (!a || !lastShot) return;
+  if (a === 'save') { downloadBlob(lastShot.blob, lastShot.name); shareMsg.textContent = 'Saved to your Downloads folder.'; }
+  if (a === 'open') window.open(lastShot.url, '_blank');
+  if (a === 'copy') {
+    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': lastShot.blob })]); shareMsg.textContent = 'Copied! Paste it anywhere.'; }
+    catch (err) { shareMsg.textContent = 'Copy is not supported here. Try Download again.'; }
+  }
+});
 
 // ---------- loop ----------
 let last = performance.now();
@@ -1281,6 +1382,7 @@ function frame(now) {
     updateBody(now);
     update(dt);
     render();
+    if (capturePending) { capturePending = false; takePhoto(); flashT = 0; }
   }
   requestAnimationFrame(frame);
 }
@@ -1323,7 +1425,7 @@ async function begin(demo) {
   startEl.style.display = 'none';
   startCards();
 }
-window.__ar = { get modelsReady() { return modelsReady; }, get cards() { return cards; }, selectCard, get items() { return items.length; }, get attached() { return attached.length; } };
+window.__ar = { get state() { return { phase, et: effect && effect.t, snapped: effect && effect.snapped, countdown, capturePending, flashT, lastShot: !!lastShot }; }, step(n) { for (let i = 0; i < n; i++) frame(last + 33); }, takePhoto, get modelsReady() { return modelsReady; }, get cards() { return cards; }, selectCard, get items() { return items.length; }, get attached() { return attached.length; } };
 go.addEventListener('click', () => begin(DEMO));
 document.getElementById('demoLink').addEventListener('click', () => begin(true));
 </script>
